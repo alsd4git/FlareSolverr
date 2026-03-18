@@ -5,6 +5,9 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write
+
 jobs:
   create-release:
     name: Create release
@@ -18,7 +21,11 @@ jobs:
       - name: Build changelog
         id: github_changelog
         run: |
-          changelog=$(git log $(git tag | tail -2 | head -1)..HEAD --no-merges --oneline)
+          previous_tag=$(git tag --sort=-version:refname | sed -n '2p')
+          if [ -z "$previous_tag" ]; then
+            previous_tag=$(git rev-list --max-parents=0 HEAD)
+          fi
+          changelog=$(git log "${previous_tag}"..HEAD --no-merges --oneline)
           echo "changelog<<EOF" >> $GITHUB_OUTPUT
           echo "$changelog" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -28,7 +35,7 @@ jobs:
         with:
           body: ${{ steps.github_changelog.outputs.changelog }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-package:
     name: Build binaries
@@ -60,4 +67,4 @@ jobs:
         with:
           files: ./dist/flaresolverr_*
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
