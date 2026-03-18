@@ -76,8 +76,14 @@ def test_browser_installation():
         logging.info("Chrome / Chromium major version: " + chrome_major_version)
 
     logging.info("Launching web browser...")
-    user_agent = utils.get_user_agent()
-    logging.info("FlareSolverr User-Agent: " + user_agent)
+    driver = None
+    try:
+        driver = utils.get_webdriver()
+        user_agent = utils.get_user_agent(driver)
+        logging.info("FlareSolverr User-Agent: " + user_agent)
+    finally:
+        if driver is not None:
+            utils.close_webdriver(driver)
     logging.info("Test successful!")
 
 
@@ -252,9 +258,7 @@ def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
         raise Exception('Error solving the challenge. ' + str(e).replace('\n', '\\n'))
     finally:
         if not req.session and driver is not None:
-            if utils.PLATFORM_VERSION == "nt":
-                driver.close()
-            driver.quit()
+            utils.close_webdriver(driver)
             logging.debug('A used instance of webdriver has been destroyed')
 
 

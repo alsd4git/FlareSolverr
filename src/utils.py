@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import urllib.parse
+from typing import Optional
 
 from selenium.webdriver.chrome.webdriver import WebDriver
 import undetected_chromedriver as uc
@@ -30,6 +31,18 @@ def get_config_headless() -> bool:
 
 def get_config_disable_media() -> bool:
     return os.environ.get('DISABLE_MEDIA', 'false').lower() == 'true'
+
+
+def get_config_user_agent() -> Optional[str]:
+    user_agent = os.environ.get('USER_AGENT', None)
+    if user_agent is None:
+        return None
+
+    user_agent = user_agent.strip()
+    if not user_agent:
+        return None
+
+    return user_agent
 
 
 def get_flaresolverr_version() -> str:
@@ -154,8 +167,11 @@ def get_webdriver(proxy: dict = None) -> WebDriver:
     if language is not None:
         options.add_argument('--accept-lang=%s' % language)
 
-    # Fix for Chrome 117 | https://github.com/FlareSolverr/FlareSolverr/issues/910
-    if USER_AGENT is not None:
+    configured_user_agent = get_config_user_agent()
+    if configured_user_agent is not None:
+        options.add_argument('--user-agent=%s' % configured_user_agent)
+    elif USER_AGENT is not None:
+        # Fix for Chrome 117 | https://github.com/FlareSolverr/FlareSolverr/issues/910
         options.add_argument('--user-agent=%s' % USER_AGENT)
 
     proxy_extension_dir = None
@@ -314,23 +330,41 @@ def extract_version_nt_folder() -> str:
 
 def get_user_agent(driver=None) -> str:
     global USER_AGENT
-    if USER_AGENT is not None:
+    configured_user_agent = get_config_user_agent()
+    if driver is None:
+        if USER_AGENT is not None:
+            return USER_AGENT
+        if configured_user_agent is not None:
+            USER_AGENT = configured_user_agent
+            return USER_AGENT
+
+    if configured_user_agent is None and USER_AGENT is not None:
         return USER_AGENT
 
+    owns_driver = driver is None
     try:
         if driver is None:
             driver = get_webdriver()
         USER_AGENT = driver.execute_script("return navigator.userAgent")
         # Fix for Chrome 117 | https://github.com/FlareSolverr/FlareSolverr/issues/910
         USER_AGENT = re.sub('HEADLESS', '', USER_AGENT, flags=re.IGNORECASE)
+        if configured_user_agent is not None and USER_AGENT != configured_user_agent:
+            logging.warning(
+                "Configured USER_AGENT differs from the browser-reported value; "
+                "using the browser-reported User-Agent."
+            )
         return USER_AGENT
     except Exception as e:
         raise Exception("Error getting browser User-Agent. " + str(e))
     finally:
-        if driver is not None:
-            if PLATFORM_VERSION == "nt":
-                driver.close()
-            driver.quit()
+        if owns_driver and driver is not None:
+            close_webdriver(driver)
+
+
+def close_webdriver(driver: WebDriver) -> None:
+    if PLATFORM_VERSION == "nt":
+        driver.close()
+    driver.quit()
 
 
 def start_xvfb_display():

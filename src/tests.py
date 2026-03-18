@@ -1,5 +1,7 @@
+import os
 import unittest
 from typing import Optional
+from unittest.mock import patch
 
 from webtest import TestApp
 
@@ -55,6 +57,20 @@ class TestFlareSolverr(unittest.TestCase):
 
         body = HealthResponse(res.json)
         self.assertEqual(STATUS_OK, body.status)
+
+    def test_get_user_agent_env_override(self):
+        original_user_agent = utils.USER_AGENT
+        try:
+            utils.USER_AGENT = None
+            expected_user_agent = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+            )
+            with patch.dict(os.environ, {"USER_AGENT": expected_user_agent}, clear=False):
+                self.assertEqual(expected_user_agent, utils.get_user_agent())
+                self.assertEqual(expected_user_agent, utils.USER_AGENT)
+        finally:
+            utils.USER_AGENT = original_user_agent
 
     def test_v1_endpoint_wrong_cmd(self):
         res = self.app.post_json('/v1', {

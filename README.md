@@ -74,6 +74,77 @@ If your host OS is Debian, make sure `libseccomp2` version is 2.5.x. You can che
 and update the package with `sudo apt install libseccomp2=2.5.1-1~bpo10+1` or `sudo apt install libseccomp2=2.5.1-1+deb11u1`.
 Remember to restart the Docker daemon and the container after the update.
 
+### Homelab recommendation
+
+For a homelab, the best default is:
+
+- `local build` while you are validating the fingerprint and iterating fast
+- `GitHub Actions + GHCR` once the image is stable, so every host pulls the same pinned tag
+
+Avoid `latest` for the long term. Pin a version tag, or better, a tag from your own fork.
+
+If a site only works from a browser that already behaves correctly, copy that browser fingerprint as closely as possible:
+
+- `USER_AGENT`
+- `LANG`
+- `TZ`
+
+The values that solved the issue in my test were:
+
+- `USER_AGENT=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36`
+- `LANG=en_US.UTF-8`
+- `TZ=Europe/Rome`
+
+#### Example: GHCR deployment
+
+This is the version I would use after you have validated the fingerprint and you want repeatable updates:
+
+```yaml
+services:
+  flaresolverr:
+    image: ghcr.io/<your-user-or-org>/flaresolverr:3.4.6-fp1
+    container_name: flaresolverr
+    restart: unless-stopped
+    expose:
+      - 8191
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_HTML=${LOG_HTML:-false}
+      - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
+      - TZ=${TZ:-Europe/Rome}
+      - LANG=${LANG:-en_US.UTF-8}
+      - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}
+    networks:
+      - media_network
+      - npm_network
+```
+
+#### Example: local build
+
+This is the quickest option while you are tuning the browser fingerprint:
+
+```yaml
+services:
+  flaresolverr:
+    build:
+      context: .
+    image: flaresolverr:local
+    container_name: flaresolverr
+    restart: unless-stopped
+    expose:
+      - 8191
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_HTML=${LOG_HTML:-false}
+      - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
+      - TZ=${TZ:-Europe/Rome}
+      - LANG=${LANG:-en_US.UTF-8}
+      - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}
+    networks:
+      - media_network
+      - npm_network
+```
+
 ### Precompiled binaries
 
 > **Warning**
@@ -288,6 +359,7 @@ This works like `request.get`, with the addition of the postData parameter. Note
 | CAPTCHA_SOLVER     | none                   | Captcha solving method. It is used when a captcha is encountered. See the Captcha Solvers section.                                       |
 | TZ                 | UTC                    | Timezone used in the logs and the web browser. Example: `TZ=Europe/London`.                                                              |
 | LANG               | none                   | Language used in the web browser. Example: `LANG=en_GB`.                                                                                 |
+| USER_AGENT         | none                   | Overrides the browser User-Agent. If omitted, FlareSolverr uses the User-Agent reported by the browser it launches. Example: `USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36`. |
 | HEADLESS           | true                   | Only for debugging. To run the web browser in headless mode or visible.                                                                  |
 | DISABLE_MEDIA      | false                  | To disable loading images, CSS, and other media in the web browser to save network bandwidth.                                            |
 | TEST_URL           | https://www.google.com | FlareSolverr makes a request on start to make sure the web browser is working. You can change that URL if it is blocked in your country. |
