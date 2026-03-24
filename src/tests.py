@@ -1,4 +1,6 @@
 import os
+import json
+import tempfile
 import unittest
 from typing import Optional
 from unittest.mock import patch
@@ -71,6 +73,166 @@ class TestFlareSolverr(unittest.TestCase):
                 self.assertEqual(expected_user_agent, utils.USER_AGENT)
         finally:
             utils.USER_AGENT = original_user_agent
+
+    def test_normalize_request_headers_legacy_dict(self):
+        headers = {
+            "contentType": "application/x-www-form-urlencoded",
+            "X-Custom-Header": "value"
+        }
+
+        normalized = utils.normalize_request_headers(headers)
+
+        self.assertEqual("application/x-www-form-urlencoded", normalized["Content-Type"])
+        self.assertEqual("value", normalized["X-Custom-Header"])
+
+    def test_redact_sensitive_data(self):
+        payload = {
+            "postData": "username=alsd&password=secret",
+            "cookies": [
+                {
+                    "name": "cf_clearance",
+                    "value": "clearance-value",
+                }
+            ],
+            "proxy": {
+                "url": "http://127.0.0.1:8888",
+                "password": "proxy-secret",
+            },
+            "turnstile_token": "token-value",
+        }
+
+        redacted = utils.redact_sensitive_data(payload)
+
+        self.assertEqual("[REDACTED]", redacted["postData"])
+        self.assertEqual("[REDACTED]", redacted["cookies"][0]["value"])
+        self.assertEqual("[REDACTED]", redacted["proxy"]["password"])
+        self.assertEqual("[REDACTED]", redacted["turnstile_token"])
+
+    def test_get_browser_fingerprint(self):
+        class DummyDriver:
+            def execute_script(self, script):
+                return {
+                    "userAgent": "Mozilla/5.0",
+                    "platform": "Linux x86_64",
+                    "vendor": "Google Inc.",
+                    "languages": ["en-US", "en"],
+                    "language": "en-US",
+                    "webdriver": False,
+                    "devicePixelRatio": 1,
+                    "screen": {
+                        "width": 1920,
+                        "height": 1080,
+                        "availWidth": 1920,
+                        "availHeight": 1040,
+                    },
+                    "viewport": {
+                        "width": 1920,
+                        "height": 941,
+                    },
+                    "hardwareConcurrency": 8,
+                    "deviceMemory": 8,
+                    "maxTouchPoints": 0,
+                    "timezone": "Europe/Rome",
+                    "locale": "it-IT",
+                    "connection": "4g",
+                }
+
+        fingerprint = utils.get_browser_fingerprint(DummyDriver())
+
+        self.assertEqual("Mozilla/5.0", fingerprint["userAgent"])
+        self.assertEqual("Linux x86_64", fingerprint["platform"])
+        self.assertEqual("Europe/Rome", fingerprint["timezone"])
+
+    def test_apply_browser_fingerprint_overrides(self):
+        class DummyDriver:
+            def __init__(self):
+                self.cdp_calls = []
+                self.window_size = None
+
+            def execute_cdp_cmd(self, command, params):
+                self.cdp_calls.append((command, params))
+
+            def set_window_size(self, width, height):
+                self.window_size = (width, height)
+
+        driver = DummyDriver()
+        with patch.dict(
+            os.environ,
+            {
+                "USER_AGENT": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+                "WINDOW_SIZE": "1470x715",
+                "SCREEN_SIZE": "1470x956",
+                "DEVICE_SCALE_FACTOR": "2",
+                "BROWSER_PLATFORM": "MacIntel",
+                "BROWSER_LANGUAGES": "en-US,en,it",
+                "BROWSER_LOCALE": "it-IT",
+            },
+            clear=False,
+        ):
+            utils.apply_browser_fingerprint_overrides(driver)
+
+        self.assertEqual((1470, 715), driver.window_size)
+        self.assertIn(
+            ("Emulation.setUserAgentOverride", {
+                "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+                "platform": "MacIntel",
+                "acceptLanguage": "en-US,en,it",
+            }),
+            driver.cdp_calls,
+        )
+        self.assertIn(
+            ("Emulation.setDeviceMetricsOverride", {
+                "width": 1470,
+                "height": 715,
+                "deviceScaleFactor": 2.0,
+                "mobile": False,
+                "screenWidth": 1470,
+                "screenHeight": 956,
+            }),
+            driver.cdp_calls,
+        )
+        self.assertIn(
+            ("Emulation.setLocaleOverride", {"locale": "it-IT"}),
+            driver.cdp_calls,
+        )
+
+    def test_get_static_cookies_for_url_from_cookie_jar_file(self):
+        cookie_jar = [
+            {
+                "name": "cf_clearance",
+                "value": "clearance-value",
+                "domain": ".mircrew-releases.org",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+            },
+            {
+                "name": "session",
+                "value": "session-value",
+                "domain": ".example.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+            },
+        ]
+
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
+            json.dump(cookie_jar, tmp)
+            cookie_jar_path = tmp.name
+
+        try:
+            with patch.dict(os.environ, {"COOKIE_JAR_FILE": cookie_jar_path}, clear=False):
+                mircrew_cookies = utils.get_static_cookies_for_url("https://mircrew-releases.org/search.php")
+                example_cookies = utils.get_static_cookies_for_url("https://example.com/")
+
+            self.assertEqual(1, len(mircrew_cookies))
+            self.assertEqual("cf_clearance", mircrew_cookies[0]["name"])
+            self.assertEqual(1, len(example_cookies))
+            self.assertEqual("session", example_cookies[0]["name"])
+        finally:
+            os.unlink(cookie_jar_path)
 
     def test_v1_endpoint_wrong_cmd(self):
         res = self.app.post_json('/v1', {

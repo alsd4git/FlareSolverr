@@ -4,7 +4,8 @@ import sys
 import time
 from datetime import timedelta
 from html import escape
-from urllib.parse import unquote, quote
+from urllib.parse import unquote, quote, urlsplit
+from http.client import RemoteDisconnected
 
 from func_timeout import FunctionTimedOut, func_timeout
 from selenium.common import TimeoutException
@@ -57,6 +58,85 @@ SHORT_TIMEOUT = 1
 SESSIONS_STORAGE = SessionsStorage()
 
 
+def _set_extra_http_headers(driver: WebDriver, headers: dict) -> bool:
+    if not headers:
+        return False
+
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": headers})
+        logging.debug("Applied legacy request headers: %s", sorted(headers.keys()))
+        return True
+    except Exception as e:
+        logging.debug("Failed to apply legacy request headers: %s", e)
+        return False
+
+
+def _clear_extra_http_headers(driver: WebDriver) -> None:
+    try:
+        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": {}})
+    except RemoteDisconnected:
+        logging.debug("Legacy request headers cleanup skipped because webdriver connection was already closed.")
+    except ConnectionError:
+        logging.debug("Legacy request headers cleanup skipped because webdriver connection was already closed.")
+    except Exception as e:
+        logging.debug("Failed to clear legacy request headers: %s", e)
+
+
+def _apply_cookies(driver: WebDriver, cookies: list[dict], url: str) -> bool:
+    if not cookies:
+        return False
+
+    parsed_url = urlsplit(url)
+    target_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+    cdp_cookies = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = cookie.get('name')
+        if not name:
+            continue
+
+        cdp_cookie = {
+            "name": str(name),
+            "value": str(cookie.get('value', '')),
+        }
+
+        if cookie.get('url'):
+            cdp_cookie["url"] = cookie["url"]
+        elif cookie.get('domain'):
+            cdp_cookie["domain"] = cookie["domain"]
+            cdp_cookie["path"] = cookie.get("path", "/")
+        else:
+            cdp_cookie["url"] = target_url
+            cdp_cookie["path"] = cookie.get("path", "/")
+
+        expiry = cookie.get("expires", cookie.get("expiry"))
+        if expiry is not None:
+            try:
+                cdp_cookie["expires"] = int(expiry)
+            except Exception:
+                logging.debug("Skipping invalid cookie expiry for %s", name)
+
+        for key in ("secure", "httpOnly", "sameSite", "priority", "sameParty", "sourceScheme", "sourcePort"):
+            if key in cookie and cookie[key] is not None:
+                cdp_cookie[key] = cookie[key]
+
+        cdp_cookies.append(cdp_cookie)
+
+    if not cdp_cookies:
+        return False
+
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setCookies", {"cookies": cdp_cookies})
+        logging.debug("Applied cookies before navigation: %s", [cookie["name"] for cookie in cdp_cookies])
+        return True
+    except Exception as e:
+        logging.debug("Failed to apply cookies before navigation: %s", e)
+        return False
+
+
 def test_browser_installation():
     logging.info("Testing web browser installation...")
     logging.info("Platform: " + platform.platform())
@@ -81,6 +161,7 @@ def test_browser_installation():
         driver = utils.get_webdriver()
         user_agent = utils.get_user_agent(driver)
         logging.info("FlareSolverr User-Agent: " + user_agent)
+        utils.log_browser_fingerprint(driver)
     finally:
         if driver is not None:
             utils.close_webdriver(driver)
@@ -103,7 +184,10 @@ def health_endpoint() -> HealthResponse:
 
 def controller_v1_endpoint(req: V1RequestBase) -> V1ResponseBase:
     start_ts = int(time.time() * 1000)
-    logging.info(f"Incoming request => POST /v1 body: {utils.object_to_dict(req)}")
+    logging.info(
+        "Incoming request => POST /v1 body: %s",
+        utils.redact_sensitive_data(utils.object_to_dict(req)),
+    )
     res: V1ResponseBase
     try:
         res = _controller_v1_handler(req)
@@ -117,7 +201,10 @@ def controller_v1_endpoint(req: V1RequestBase) -> V1ResponseBase:
     res.startTimestamp = start_ts
     res.endTimestamp = int(time.time() * 1000)
     res.version = utils.get_flaresolverr_version()
-    logging.debug(f"Response => POST /v1 body: {utils.object_to_dict(res)}")
+    logging.debug(
+        "Response => POST /v1 body: %s",
+        utils.redact_sensitive_data(utils.object_to_dict(res)),
+    )
     logging.info(f"Response in {(res.endTimestamp - res.startTimestamp) / 1000} s")
     return res
 
@@ -127,7 +214,9 @@ def _controller_v1_handler(req: V1RequestBase) -> V1ResponseBase:
     if req.cmd is None:
         raise Exception("Request parameter 'cmd' is mandatory.")
     if req.headers is not None:
-        logging.warning("Request parameter 'headers' was removed in FlareSolverr v2.")
+        logging.warning(
+            "Request parameter 'headers' is deprecated; applying it as extra HTTP headers for compatibility."
+        )
     if req.userAgent is not None:
         logging.warning("Request parameter 'userAgent' was removed in FlareSolverr v2.")
 
@@ -235,6 +324,11 @@ def _cmd_sessions_destroy(req: V1RequestBase) -> V1ResponseBase:
 def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
     timeout = int(req.maxTimeout) / 1000
     driver = None
+    extra_headers = utils.normalize_request_headers(req.headers)
+    cookies_to_apply = utils.get_static_cookies_for_url(req.url)
+    if req.cookies is not None and len(req.cookies) > 0:
+        cookies_to_apply.extend(req.cookies)
+    headers_applied = False
     try:
         if req.session:
             session_id = req.session
@@ -251,12 +345,22 @@ def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
         else:
             driver = utils.get_webdriver(req.proxy)
             logging.debug('New instance of webdriver has been created to perform the request')
+
+        if cookies_to_apply:
+            logging.debug("Applying %d cookie(s) before navigation", len(cookies_to_apply))
+            _apply_cookies(driver, cookies_to_apply, req.url)
+
+        if extra_headers:
+            headers_applied = _set_extra_http_headers(driver, extra_headers)
+
         return func_timeout(timeout, _evil_logic, (req, driver, method))
     except FunctionTimedOut:
         raise Exception(f'Error solving the challenge. Timeout after {timeout} seconds.')
     except Exception as e:
         raise Exception('Error solving the challenge. ' + str(e).replace('\n', '\\n'))
     finally:
+        if headers_applied and driver is not None:
+            _clear_extra_http_headers(driver)
         if not req.session and driver is not None:
             utils.close_webdriver(driver)
             logging.debug('A used instance of webdriver has been destroyed')
@@ -346,148 +450,140 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
     disable_media = utils.get_config_disable_media()
     if req.disableMedia is not None:
         disable_media = req.disableMedia
-    if disable_media:
-        block_urls = [
-            # Images
-            "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.bmp", "*.svg", "*.ico",
-            "*.PNG", "*.JPG", "*.JPEG", "*.GIF", "*.WEBP", "*.BMP", "*.SVG", "*.ICO",
-            "*.tiff", "*.tif", "*.jpe", "*.apng", "*.avif", "*.heic", "*.heif",
-            "*.TIFF", "*.TIF", "*.JPE", "*.APNG", "*.AVIF", "*.HEIC", "*.HEIF",
-            # Stylesheets
-            "*.css",
-            "*.CSS",
-            # Fonts
-            "*.woff", "*.woff2", "*.ttf", "*.otf", "*.eot",
-            "*.WOFF", "*.WOFF2", "*.TTF", "*.OTF", "*.EOT"
-        ]
-        try:
-            logging.debug("Network.setBlockedURLs: %s", block_urls)
-            driver.execute_cdp_cmd("Network.enable", {})
-            driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": block_urls})
-        except Exception:
-            # if CDP commands are not available or fail, ignore and continue
-            logging.debug("Network.setBlockedURLs failed or unsupported on this webdriver")
 
     # navigate to the page
     logging.debug(f"Navigating to... {req.url}")
     turnstile_token = None
 
-    if method == "POST":
-        _post_request(req, driver)
-    else:
-        if req.tabs_till_verify is None:
-            driver.get(req.url)
-        else:
-            turnstile_token = _resolve_turnstile_captcha(req, driver)
+    try:
+        if disable_media:
+            block_urls = [
+                # Images
+                "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.bmp", "*.svg", "*.ico",
+                "*.PNG", "*.JPG", "*.JPEG", "*.GIF", "*.WEBP", "*.BMP", "*.SVG", "*.ICO",
+                "*.tiff", "*.tif", "*.jpe", "*.apng", "*.avif", "*.heic", "*.heif",
+                "*.TIFF", "*.TIF", "*.JPE", "*.APNG", "*.AVIF", "*.HEIC", "*.HEIF",
+                # Stylesheets
+                "*.css",
+                "*.CSS",
+                # Fonts
+                "*.woff", "*.woff2", "*.ttf", "*.otf", "*.eot",
+                "*.WOFF", "*.WOFF2", "*.TTF", "*.OTF", "*.EOT"
+            ]
+            try:
+                logging.debug("Network.setBlockedURLs: %s", block_urls)
+                driver.execute_cdp_cmd("Network.enable", {})
+                driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": block_urls})
+            except Exception:
+                # if CDP commands are not available or fail, ignore and continue
+                logging.debug("Network.setBlockedURLs failed or unsupported on this webdriver")
 
-    # set cookies if required
-    if req.cookies is not None and len(req.cookies) > 0:
-        logging.debug(f'Setting cookies...')
-        for cookie in req.cookies:
-            driver.delete_cookie(cookie['name'])
-            driver.add_cookie(cookie)
-        # reload the page
-        if method == 'POST':
+        if method == "POST":
             _post_request(req, driver)
         else:
-            driver.get(req.url)
+            if req.tabs_till_verify is None:
+                driver.get(req.url)
+            else:
+                turnstile_token = _resolve_turnstile_captcha(req, driver)
 
-    # wait for the page
-    if utils.get_config_log_html():
-        logging.debug(f"Response HTML:\n{driver.page_source}")
-    html_element = driver.find_element(By.TAG_NAME, "html")
-    page_title = driver.title
+        # wait for the page
+        if utils.get_config_log_html():
+            logging.debug(f"Response HTML:\n{driver.page_source}")
+        html_element = driver.find_element(By.TAG_NAME, "html")
+        page_title = driver.title
 
-    # find access denied titles
-    for title in ACCESS_DENIED_TITLES:
-        if page_title.startswith(title):
-            raise Exception('Cloudflare has blocked this request. '
-                            'Probably your IP is banned for this site, check in your web browser.')
-    # find access denied selectors
-    for selector in ACCESS_DENIED_SELECTORS:
-        found_elements = driver.find_elements(By.CSS_SELECTOR, selector)
-        if len(found_elements) > 0:
-            raise Exception('Cloudflare has blocked this request. '
-                            'Probably your IP is banned for this site, check in your web browser.')
-
-    # find challenge by title
-    challenge_found = False
-    for title in CHALLENGE_TITLES:
-        if title.lower() == page_title.lower():
-            challenge_found = True
-            logging.info("Challenge detected. Title found: " + page_title)
-            break
-    if not challenge_found:
-        # find challenge by selectors
-        for selector in CHALLENGE_SELECTORS:
+        # find access denied titles
+        for title in ACCESS_DENIED_TITLES:
+            if page_title.startswith(title):
+                raise Exception('Cloudflare has blocked this request. '
+                                'Probably your IP is banned for this site, check in your web browser.')
+        # find access denied selectors
+        for selector in ACCESS_DENIED_SELECTORS:
             found_elements = driver.find_elements(By.CSS_SELECTOR, selector)
             if len(found_elements) > 0:
+                raise Exception('Cloudflare has blocked this request. '
+                                'Probably your IP is banned for this site, check in your web browser.')
+
+        # find challenge by title
+        challenge_found = False
+        for title in CHALLENGE_TITLES:
+            if title.lower() == page_title.lower():
                 challenge_found = True
-                logging.info("Challenge detected. Selector found: " + selector)
+                logging.info("Challenge detected. Title found: " + page_title)
                 break
+        if not challenge_found:
+            # find challenge by selectors
+            for selector in CHALLENGE_SELECTORS:
+                found_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                if len(found_elements) > 0:
+                    challenge_found = True
+                    logging.info("Challenge detected. Selector found: " + selector)
+                    break
 
-    attempt = 0
-    if challenge_found:
-        while True:
+        attempt = 0
+        if challenge_found:
+            while True:
+                try:
+                    attempt = attempt + 1
+                    # wait until the title changes
+                    for title in CHALLENGE_TITLES:
+                        logging.debug("Waiting for title (attempt " + str(attempt) + "): " + title)
+                        WebDriverWait(driver, SHORT_TIMEOUT).until_not(title_is(title))
+
+                    # then wait until all the selectors disappear
+                    for selector in CHALLENGE_SELECTORS:
+                        logging.debug("Waiting for selector (attempt " + str(attempt) + "): " + selector)
+                        WebDriverWait(driver, SHORT_TIMEOUT).until_not(
+                            presence_of_element_located((By.CSS_SELECTOR, selector)))
+
+                    # all elements not found
+                    break
+
+                except TimeoutException:
+                    logging.debug("Timeout waiting for selector")
+
+                    click_verify(driver)
+
+                    # update the html (cloudflare reloads the page every 5 s)
+                    html_element = driver.find_element(By.TAG_NAME, "html")
+
+            # waits until cloudflare redirection ends
+            logging.debug("Waiting for redirect")
+            # noinspection PyBroadException
             try:
-                attempt = attempt + 1
-                # wait until the title changes
-                for title in CHALLENGE_TITLES:
-                    logging.debug("Waiting for title (attempt " + str(attempt) + "): " + title)
-                    WebDriverWait(driver, SHORT_TIMEOUT).until_not(title_is(title))
+                WebDriverWait(driver, SHORT_TIMEOUT).until(staleness_of(html_element))
+            except Exception:
+                logging.debug("Timeout waiting for redirect")
 
-                # then wait until all the selectors disappear
-                for selector in CHALLENGE_SELECTORS:
-                    logging.debug("Waiting for selector (attempt " + str(attempt) + "): " + selector)
-                    WebDriverWait(driver, SHORT_TIMEOUT).until_not(
-                        presence_of_element_located((By.CSS_SELECTOR, selector)))
+            logging.info("Challenge solved!")
+            res.message = "Challenge solved!"
+        else:
+            logging.info("Challenge not detected!")
+            res.message = "Challenge not detected!"
 
-                # all elements not found
-                break
+        challenge_res = ChallengeResolutionResultT({})
+        challenge_res.url = driver.current_url
+        challenge_res.status = 200  # todo: fix, selenium not provides this info
+        challenge_res.cookies = driver.get_cookies()
+        challenge_res.userAgent = utils.get_user_agent(driver)
+        challenge_res.turnstile_token = turnstile_token
 
-            except TimeoutException:
-                logging.debug("Timeout waiting for selector")
+        if not req.returnOnlyCookies:
+            challenge_res.headers = {}  # todo: fix, selenium not provides this info
 
-                click_verify(driver)
+            if req.waitInSeconds and req.waitInSeconds > 0:
+                logging.info("Waiting " + str(req.waitInSeconds) + " seconds before returning the response...")
+                time.sleep(req.waitInSeconds)
 
-                # update the html (cloudflare reloads the page every 5 s)
-                html_element = driver.find_element(By.TAG_NAME, "html")
+            challenge_res.response = driver.page_source
 
-        # waits until cloudflare redirection ends
-        logging.debug("Waiting for redirect")
-        # noinspection PyBroadException
-        try:
-            WebDriverWait(driver, SHORT_TIMEOUT).until(staleness_of(html_element))
-        except Exception:
-            logging.debug("Timeout waiting for redirect")
+        if req.returnScreenshot:
+            challenge_res.screenshot = driver.get_screenshot_as_base64()
 
-        logging.info("Challenge solved!")
-        res.message = "Challenge solved!"
-    else:
-        logging.info("Challenge not detected!")
-        res.message = "Challenge not detected!"
-
-    challenge_res = ChallengeResolutionResultT({})
-    challenge_res.url = driver.current_url
-    challenge_res.status = 200  # todo: fix, selenium not provides this info
-    challenge_res.cookies = driver.get_cookies()
-    challenge_res.userAgent = utils.get_user_agent(driver)
-    challenge_res.turnstile_token = turnstile_token
-
-    if not req.returnOnlyCookies:
-        challenge_res.headers = {}  # todo: fix, selenium not provides this info
-
-        if req.waitInSeconds and req.waitInSeconds > 0:
-            logging.info("Waiting " + str(req.waitInSeconds) + " seconds before returning the response...")
-            time.sleep(req.waitInSeconds)
-
-        challenge_res.response = driver.page_source
-
-    if req.returnScreenshot:
-        challenge_res.screenshot = driver.get_screenshot_as_base64()
-
-    res.result = challenge_res
-    return res
+        res.result = challenge_res
+        return res
+    finally:
+        _clear_extra_http_headers(driver)
 
 
 def _post_request(req: V1RequestBase, driver: WebDriver):

@@ -86,14 +86,50 @@ Avoid `latest` for the long term. Pin a version tag, or better, a tag from your 
 If a site only works from a browser that already behaves correctly, copy that browser fingerprint as closely as possible:
 
 - `USER_AGENT`
-- `LANG`
+- `BROWSER_LANGUAGES`
+- `BROWSER_LOCALE`
+- `BROWSER_PLATFORM`
+- `WINDOW_SIZE`
+- `SCREEN_SIZE`
+- `DEVICE_SCALE_FACTOR`
 - `TZ`
+- `COOKIE_JAR_FILE`
 
 The values that solved the issue in my test were:
 
 - `USER_AGENT=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36`
-- `LANG=en_US.UTF-8`
+- `BROWSER_LANGUAGES=en-US,en,it`
+- `BROWSER_LOCALE=it`
+- `BROWSER_PLATFORM=MacIntel`
+- `WINDOW_SIZE=1470x715`
+- `SCREEN_SIZE=1470x956`
+- `DEVICE_SCALE_FACTOR=2`
 - `TZ=Europe/Rome`
+
+If a site depends on an authenticated browser session, export the browser cookies into a JSON file and mount it into the container. FlareSolverr will inject only the cookies whose domain matches the requested host, before the page navigation starts.
+
+Example `cookie-jar.json`:
+
+```json
+[
+  {
+    "name": "cf_clearance",
+    "value": "your-clearance-cookie",
+    "domain": ".example.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true
+  },
+  {
+    "name": "session",
+    "value": "your-session-cookie",
+    "domain": ".example.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true
+  }
+]
+```
 
 #### Example: GHCR deployment
 
@@ -102,7 +138,7 @@ This is the version I would use after you have validated the fingerprint and you
 ```yaml
 services:
   flaresolverr:
-    image: ghcr.io/<your-user-or-org>/flaresolverr:3.4.6-fp1
+    image: ghcr.io/alsd4git/flaresolverr:latest
     container_name: flaresolverr
     restart: unless-stopped
     expose:
@@ -114,9 +150,13 @@ services:
       - TZ=${TZ:-Europe/Rome}
       - LANG=${LANG:-en_US.UTF-8}
       - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}
-    networks:
-      - media_network
-      - npm_network
+      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-en-US,en,it}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-it}
+      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-MacIntel}
+      - WINDOW_SIZE=${WINDOW_SIZE:-1470x715}
+      - SCREEN_SIZE=${SCREEN_SIZE:-1470x956}
+      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-2}
+      - COOKIE_JAR_FILE=${COOKIE_JAR_FILE:-/config/cookie-jar.json}
 ```
 
 #### Example: local build
@@ -140,9 +180,12 @@ services:
       - TZ=${TZ:-Europe/Rome}
       - LANG=${LANG:-en_US.UTF-8}
       - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}
-    networks:
-      - media_network
-      - npm_network
+      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-en-US,en,it}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-it}
+      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-MacIntel}
+      - WINDOW_SIZE=${WINDOW_SIZE:-1470x715}
+      - SCREEN_SIZE=${SCREEN_SIZE:-1470x956}
+      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-2}
 ```
 
 ### Precompiled binaries
@@ -268,6 +311,7 @@ session. When you no longer need to use a session you should make sure to close 
 | session_ttl_minutes | Optional. FlareSolverr will automatically rotate expired sessions based on the TTL provided in minutes.                                                                                                                                                                                                                                      |
 | maxTimeout          | Optional, default value 60000. Max timeout to solve the challenge in milliseconds.                                                                                                                                                                                                                                                           |
 | cookies             | Optional. Will be used by the headless browser. Eg: `"cookies": [{"name": "cookie1", "value": "value1"}, {"name": "cookie2", "value": "value2"}]`.                                                                                                                                                                                           |
+| headers             | Optional legacy compatibility. Extra HTTP headers applied to the request when possible. Useful when an old client still sends a request-specific content type or custom header.                                                                                                                                                          |
 | returnOnlyCookies   | Optional, default false. Only returns the cookies. Response data, headers and other parts of the response are removed.                                                                                                                                                                                                                       |
 | returnScreenshot    | Optional, default false. Captures a screenshot of the final rendered page after all challenges and waits are completed. The screenshot is returned as a Base64-encoded PNG string in the `screenshot` field of the response.                                                                                                                 |
 | proxy               | Optional, default disabled. Eg: `"proxy": {"url": "http://127.0.0.1:8888"}`. You must include the proxy schema in the URL: `http://`, `socks4://` or `socks5://`. Authorization (username/password) is not supported. (When the `session` parameter is set, the proxy is ignored; a session specific proxy can be set in `sessions.create`.) |
@@ -358,8 +402,15 @@ This works like `request.get`, with the addition of the postData parameter. Note
 | PROXY_PASSWORD     | none                   | Password for proxy. Will be overwritten by `request` or `sessions` proxy, if used. Example: `testpass`.                                  |
 | CAPTCHA_SOLVER     | none                   | Captcha solving method. It is used when a captcha is encountered. See the Captcha Solvers section.                                       |
 | TZ                 | UTC                    | Timezone used in the logs and the web browser. Example: `TZ=Europe/London`.                                                              |
-| LANG               | none                   | Language used in the web browser. Example: `LANG=en_GB`.                                                                                 |
+| LANG               | none                   | Fallback locale used by the web browser when the browser-specific locale variables below are not set. Example: `LANG=en_GB.UTF-8`.         |
 | USER_AGENT         | none                   | Overrides the browser User-Agent. If omitted, FlareSolverr uses the User-Agent reported by the browser it launches. Example: `USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36`. |
+| BROWSER_LANGUAGES  | none                   | Browser language list used for the fingerprint. Example: `BROWSER_LANGUAGES=en-US,en,it`.                                                |
+| BROWSER_LOCALE     | none                   | Browser locale used for `Intl.DateTimeFormat()` and related APIs. Example: `BROWSER_LOCALE=it-IT`.                                       |
+| BROWSER_PLATFORM   | none                   | Browser platform reported to JavaScript. Example: `BROWSER_PLATFORM=MacIntel`.                                                           |
+| WINDOW_SIZE        | 1920x1080              | Browser viewport size. Example: `WINDOW_SIZE=1470x715`.                                                                                  |
+| SCREEN_SIZE        | none                   | Virtual screen size used by Xvfb. Example: `SCREEN_SIZE=1470x956`. If omitted, the window size is reused.                                |
+| DEVICE_SCALE_FACTOR| 1                      | Device pixel ratio used for the browser metrics. Example: `DEVICE_SCALE_FACTOR=2`.                                                       |
+| COOKIE_JAR_FILE    | none                   | Optional path to a JSON cookie jar mounted in the container. Cookies are injected automatically when the request host matches the cookie domain. Example: `/config/cookie-jar.json`. |
 | HEADLESS           | true                   | Only for debugging. To run the web browser in headless mode or visible.                                                                  |
 | DISABLE_MEDIA      | false                  | To disable loading images, CSS, and other media in the web browser to save network bandwidth.                                            |
 | TEST_URL           | https://www.google.com | FlareSolverr makes a request on start to make sure the web browser is working. You can change that URL if it is blocked in your country. |

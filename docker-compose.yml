@@ -13,6 +13,13 @@ services:
       - TZ=${TZ:-Europe/London}
       - LANG=${LANG:-}
       - USER_AGENT=${USER_AGENT:-}
+      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-}
+      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-}
+      - WINDOW_SIZE=${WINDOW_SIZE:-}
+      - SCREEN_SIZE=${SCREEN_SIZE:-}
+      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-}
+      - COOKIE_JAR_FILE=${COOKIE_JAR_FILE:-/config/cookie-jar.json}
     ports:
       - "${PORT:-8191}:8191"
     volumes:
