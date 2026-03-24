@@ -1,10 +1,14 @@
----
-version: "2.1"
 services:
   flaresolverr:
-    # DockerHub mirror flaresolverr/flaresolverr:latest
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    # Fork build from GHCR; override IMAGE_TAG to pin a specific tag.
+    image: ghcr.io/alsd4git/flaresolverr:${IMAGE_TAG:-latest}
     container_name: flaresolverr
+    restart: unless-stopped
+    # Disabled: use reverse proxy instead (port is exposed below).
+    # ports:
+    #   - 8191:8191 # API (external mapping)
+    expose:
+      - 8191 # API (internal, for reverse proxy or internal access)
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FILE=${LOG_FILE:-none}
@@ -20,8 +24,5 @@ services:
       - SCREEN_SIZE=${SCREEN_SIZE:-}
       - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-}
       - COOKIE_JAR_FILE=${COOKIE_JAR_FILE:-/config/cookie-jar.json}
-    ports:
-      - "${PORT:-8191}:8191"
     volumes:
-      - /var/lib/flaresolver:/config
-    restart: unless-stopped
+      - ${DOCKER_DATA_BASEFOLDER:-/opt/docker/data}/flaresolverr:/config

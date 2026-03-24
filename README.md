@@ -35,8 +35,8 @@ already included within the image.
 
 Docker images are available in:
 
-- GitHub Registry => https://github.com/orgs/FlareSolverr/packages/container/package/flaresolverr
-- DockerHub => https://hub.docker.com/r/flaresolverr/flaresolverr
+- GitHub Registry => <https://github.com/orgs/FlareSolverr/packages/container/package/flaresolverr>
+- DockerHub => <https://hub.docker.com/r/flaresolverr/flaresolverr>
 
 Supported architectures are:
 
@@ -95,18 +95,10 @@ If a site only works from a browser that already behaves correctly, copy that br
 - `TZ`
 - `COOKIE_JAR_FILE`
 
-The values that solved the issue in my test were:
+Keep those values in a local `.env` file or in your homelab compose override. Do not commit browser fingerprints or cookie jars to git.
 
-- `USER_AGENT=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36`
-- `BROWSER_LANGUAGES=en-US,en,it`
-- `BROWSER_LOCALE=it`
-- `BROWSER_PLATFORM=MacIntel`
-- `WINDOW_SIZE=1470x715`
-- `SCREEN_SIZE=1470x956`
-- `DEVICE_SCALE_FACTOR=2`
-- `TZ=Europe/Rome`
-
-If a site depends on an authenticated browser session, export the browser cookies into a JSON file and mount it into the container. FlareSolverr will inject only the cookies whose domain matches the requested host, before the page navigation starts.
+If a site depends on an authenticated browser session, export the browser cookies into a JSON file and mount it into the container. FlareSolverr will inject only the cookies whose domain matches the requested host before the page navigation starts.
+Keep the file outside git, for example at `${DOCKER_DATA_BASEFOLDER:-/opt/docker/data}/flaresolverr/cookie-jar.json`, so the default mount exposes it as `/config/cookie-jar.json`.
 
 Example `cookie-jar.json`:
 
@@ -114,15 +106,16 @@ Example `cookie-jar.json`:
 [
   {
     "name": "cf_clearance",
-    "value": "your-clearance-cookie",
+    "value": "<cookie value>",
     "domain": ".example.com",
     "path": "/",
     "secure": true,
-    "httpOnly": true
+    "httpOnly": true,
+    "expiry": 1770000000
   },
   {
     "name": "session",
-    "value": "your-session-cookie",
+    "value": "<cookie value>",
     "domain": ".example.com",
     "path": "/",
     "secure": true,
@@ -131,37 +124,38 @@ Example `cookie-jar.json`:
 ]
 ```
 
-#### Example: GHCR deployment
-
-This is the version I would use after you have validated the fingerprint and you want repeatable updates:
+The recommended homelab layout is:
 
 ```yaml
 services:
   flaresolverr:
-    image: ghcr.io/alsd4git/flaresolverr:latest
+    image: ghcr.io/alsd4git/flaresolverr:${IMAGE_TAG:-latest}
     container_name: flaresolverr
     restart: unless-stopped
     expose:
       - 8191
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FILE=${LOG_FILE:-none}
       - LOG_HTML=${LOG_HTML:-false}
       - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
-      - TZ=${TZ:-Europe/Rome}
-      - LANG=${LANG:-en_US.UTF-8}
-      - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}
-      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-en-US,en,it}
-      - BROWSER_LOCALE=${BROWSER_LOCALE:-it}
-      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-MacIntel}
-      - WINDOW_SIZE=${WINDOW_SIZE:-1470x715}
-      - SCREEN_SIZE=${SCREEN_SIZE:-1470x956}
-      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-2}
+      - TZ=${TZ:-Europe/London}
+      - LANG=${LANG:-}
+      - USER_AGENT=${USER_AGENT:-}
+      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-}
+      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-}
+      - WINDOW_SIZE=${WINDOW_SIZE:-}
+      - SCREEN_SIZE=${SCREEN_SIZE:-}
+      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-}
       - COOKIE_JAR_FILE=${COOKIE_JAR_FILE:-/config/cookie-jar.json}
+    volumes:
+      - ${DOCKER_DATA_BASEFOLDER:-/opt/docker/data}/flaresolverr:/config
 ```
 
-#### Example: local build
+Use `IMAGE_TAG=v3.4.6-alsd.1` if you want the tagged fork build instead of the moving `latest` image.
 
-This is the quickest option while you are tuning the browser fingerprint:
+If you prefer a local build while iterating, use the same layout with `build:` instead of `image:`:
 
 ```yaml
 services:
@@ -175,17 +169,21 @@ services:
       - 8191
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FILE=${LOG_FILE:-none}
       - LOG_HTML=${LOG_HTML:-false}
       - CAPTCHA_SOLVER=${CAPTCHA_SOLVER:-none}
-      - TZ=${TZ:-Europe/Rome}
-      - LANG=${LANG:-en_US.UTF-8}
-      - USER_AGENT=${USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}
-      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-en-US,en,it}
-      - BROWSER_LOCALE=${BROWSER_LOCALE:-it}
-      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-MacIntel}
-      - WINDOW_SIZE=${WINDOW_SIZE:-1470x715}
-      - SCREEN_SIZE=${SCREEN_SIZE:-1470x956}
-      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-2}
+      - TZ=${TZ:-Europe/London}
+      - LANG=${LANG:-}
+      - USER_AGENT=${USER_AGENT:-}
+      - BROWSER_LANGUAGES=${BROWSER_LANGUAGES:-}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-}
+      - BROWSER_PLATFORM=${BROWSER_PLATFORM:-}
+      - WINDOW_SIZE=${WINDOW_SIZE:-}
+      - SCREEN_SIZE=${SCREEN_SIZE:-}
+      - DEVICE_SCALE_FACTOR=${DEVICE_SCALE_FACTOR:-}
+      - COOKIE_JAR_FILE=${COOKIE_JAR_FILE:-/config/cookie-jar.json}
+    volumes:
+      - ${DOCKER_DATA_BASEFOLDER:-/opt/docker/data}/flaresolverr:/config
 ```
 
 ### Precompiled binaries
@@ -401,19 +399,19 @@ This works like `request.get`, with the addition of the postData parameter. Note
 | PROXY_USERNAME     | none                   | Username for proxy. Will be overwritten by `request` or `sessions` proxy, if used. Example: `testuser`.                                  |
 | PROXY_PASSWORD     | none                   | Password for proxy. Will be overwritten by `request` or `sessions` proxy, if used. Example: `testpass`.                                  |
 | CAPTCHA_SOLVER     | none                   | Captcha solving method. It is used when a captcha is encountered. See the Captcha Solvers section.                                       |
-| TZ                 | UTC                    | Timezone used in the logs and the web browser. Example: `TZ=Europe/London`.                                                              |
+| TZ                 | UTC                    | Timezone used in the logs and the web browser. Example: `TZ=<your-timezone>`.                                                             |
 | LANG               | none                   | Fallback locale used by the web browser when the browser-specific locale variables below are not set. Example: `LANG=en_GB.UTF-8`.         |
-| USER_AGENT         | none                   | Overrides the browser User-Agent. If omitted, FlareSolverr uses the User-Agent reported by the browser it launches. Example: `USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36`. |
-| BROWSER_LANGUAGES  | none                   | Browser language list used for the fingerprint. Example: `BROWSER_LANGUAGES=en-US,en,it`.                                                |
-| BROWSER_LOCALE     | none                   | Browser locale used for `Intl.DateTimeFormat()` and related APIs. Example: `BROWSER_LOCALE=it-IT`.                                       |
-| BROWSER_PLATFORM   | none                   | Browser platform reported to JavaScript. Example: `BROWSER_PLATFORM=MacIntel`.                                                           |
-| WINDOW_SIZE        | 1920x1080              | Browser viewport size. Example: `WINDOW_SIZE=1470x715`.                                                                                  |
-| SCREEN_SIZE        | none                   | Virtual screen size used by Xvfb. Example: `SCREEN_SIZE=1470x956`. If omitted, the window size is reused.                                |
-| DEVICE_SCALE_FACTOR| 1                      | Device pixel ratio used for the browser metrics. Example: `DEVICE_SCALE_FACTOR=2`.                                                       |
+| USER_AGENT         | none                   | Overrides the browser User-Agent. If omitted, FlareSolverr uses the User-Agent reported by the browser it launches. Example: `USER_AGENT=<browser-user-agent>`. |
+| BROWSER_LANGUAGES  | none                   | Browser language list used for the fingerprint. Example: `BROWSER_LANGUAGES=en-US,en`.                                                    |
+| BROWSER_LOCALE     | none                   | Browser locale used for `Intl.DateTimeFormat()` and related APIs. Example: `BROWSER_LOCALE=en-US`.                                        |
+| BROWSER_PLATFORM   | none                   | Browser platform reported to JavaScript. Example: `BROWSER_PLATFORM=<browser-platform>`.                                                  |
+| WINDOW_SIZE        | 1920x1080              | Browser viewport size. Example: `WINDOW_SIZE=<width>x<height>`.                                                                           |
+| SCREEN_SIZE        | none                   | Virtual screen size used by Xvfb. Example: `SCREEN_SIZE=<width>x<height>`. If omitted, the window size is reused.                         |
+| DEVICE_SCALE_FACTOR| 1                      | Device pixel ratio used for the browser metrics. Example: `DEVICE_SCALE_FACTOR=<device-pixel-ratio>`.                                     |
 | COOKIE_JAR_FILE    | none                   | Optional path to a JSON cookie jar mounted in the container. Cookies are injected automatically when the request host matches the cookie domain. Example: `/config/cookie-jar.json`. |
 | HEADLESS           | true                   | Only for debugging. To run the web browser in headless mode or visible.                                                                  |
 | DISABLE_MEDIA      | false                  | To disable loading images, CSS, and other media in the web browser to save network bandwidth.                                            |
-| TEST_URL           | https://www.google.com | FlareSolverr makes a request on start to make sure the web browser is working. You can change that URL if it is blocked in your country. |
+| TEST_URL           | <https://www.google.com> | FlareSolverr makes a request on start to make sure the web browser is working. You can change that URL if it is blocked in your country. |
 | PORT               | 8191                   | Listening port. You don't need to change this if you are running on Docker.                                                              |
 | HOST               | 0.0.0.0                | Listening interface. You don't need to change this if you are running on Docker.                                                         |
 | PROMETHEUS_ENABLED | false                  | Enable Prometheus exporter. See the Prometheus section below.                                                                            |
@@ -466,5 +464,4 @@ to the file name of one of the adapters inside the `/captcha` directory.
 
 ## Related projects
 
-- C# implementation => https://github.com/FlareSolverr/FlareSolverrSharp
-
+- C# implementation => <https://github.com/FlareSolverr/FlareSolverrSharp>
