@@ -3,8 +3,7 @@ import platform
 import sys
 import time
 from datetime import timedelta
-from html import escape
-from urllib.parse import unquote, quote, urlsplit
+from urllib.parse import unquote, urlsplit
 from http.client import RemoteDisconnected
 
 from func_timeout import FunctionTimedOut, func_timeout
@@ -587,7 +586,7 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
 
 
 def _post_request(req: V1RequestBase, driver: WebDriver):
-    post_form = f'<form id="hackForm" action="{req.url}" method="POST">'
+    post_fields = []
     query_string = req.postData if req.postData and req.postData[0] != '?' else req.postData[1:] if req.postData else ''
     pairs = query_string.split('&')
     for pair in pairs:
@@ -604,16 +603,36 @@ def _post_request(req: V1RequestBase, driver: WebDriver):
             value = unquote(parts[1]) if len(parts) > 1 else ''
         except Exception:
             value = parts[1] if len(parts) > 1 else ''
-        # Protection of " character, for syntax
-        value=value.replace('"','&quot;')
-        post_form += f'<input type="text" name="{escape(quote(name))}" value="{escape(quote(value))}"><br>'
-    post_form += '</form>'
-    html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <body>
-            {post_form}
-            <script>document.getElementById('hackForm').submit();</script>
-        </body>
-        </html>"""
-    driver.get("data:text/html;charset=utf-8,{html_content}".format(html_content=html_content))
+        post_fields.append({
+            "name": name,
+            "value": value,
+        })
+
+    # Load the target origin first so the synthetic form submission preserves
+    # same-site browser semantics and sends the expected cookies.
+    driver.get(req.url)
+    driver.execute_script(
+        """
+        const actionUrl = arguments[0];
+        const fields = arguments[1];
+        const form = document.createElement('form');
+        form.id = 'hackForm';
+        form.action = actionUrl;
+        form.method = 'POST';
+        form.enctype = 'application/x-www-form-urlencoded';
+        form.style.display = 'none';
+
+        for (const field of fields) {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = field.name;
+            input.value = field.value;
+            form.appendChild(input);
+        }
+
+        document.body.appendChild(form);
+        form.submit();
+        """,
+        req.url,
+        post_fields,
+    )

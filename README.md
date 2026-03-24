@@ -383,6 +383,7 @@ Example response from running the `curl` above:
 ### + `request.post`
 
 This works like `request.get`, with the addition of the postData parameter. Note that `tabs_till_verify` is currently supported only for GET requests and requires one extra argument.
+The synthetic form is submitted from the target origin so browser cookies and SameSite rules behave like a normal site login.
 
 | Parameter | Notes                                                                    |
 | --------- | ------------------------------------------------------------------------ |

@@ -9,6 +9,7 @@ from webtest import TestApp
 
 from dtos import IndexResponse, HealthResponse, V1ResponseBase, STATUS_OK, STATUS_ERROR
 import flaresolverr
+import flaresolverr_service
 import utils
 
 
@@ -733,6 +734,35 @@ class TestFlareSolverr(unittest.TestCase):
         body = V1ResponseBase(res.json)
         self.assertEqual(STATUS_OK, body.status)
         self.assertEqual("Challenge not detected!", body.message)
+
+    def test_post_request_starts_from_target_origin(self):
+        class DummyDriver:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, url):
+                self.calls.append(("get", url))
+
+            def execute_script(self, script, action_url, fields):
+                self.calls.append(("execute_script", action_url, fields))
+
+        driver = DummyDriver()
+        request = flaresolverr_service.V1RequestBase({
+            "url": "https://example.com/login",
+            "postData": "username=test&password=secret&submit=Login",
+        })
+
+        flaresolverr_service._post_request(request, driver)
+
+        self.assertEqual(("get", "https://example.com/login"), driver.calls[0])
+        self.assertEqual("https://example.com/login", driver.calls[1][1])
+        self.assertEqual(
+            [
+                {"name": "username", "value": "test"},
+                {"name": "password", "value": "secret"},
+            ],
+            driver.calls[1][2],
+        )
 
     def test_v1_endpoint_sessions_create_without_session(self):
         res = self.app.post_json('/v1', {
